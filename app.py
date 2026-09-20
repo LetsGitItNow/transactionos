@@ -6,7 +6,7 @@ import sqlite3, json, os, secrets, hashlib, hmac
 from datetime import datetime, timezone
 
 BASE=os.path.dirname(__file__); DB=os.path.join(BASE,'transactionos.db')
-app=FastAPI(title='TransactionOS API', version='3.2.0')
+app=FastAPI(title='TransactionOS API', version='3.3.4')
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
 
 @app.get('/', include_in_schema=False)
@@ -215,7 +215,7 @@ def brain_history(tid:str,authorization:str|None=Header(default=None)):
     return [dict(r, next_action=json.loads(r['next_action_json']) if r['next_action_json'] else None, automated_items=json.loads(r['automated_json'] or '[]'), escalations=json.loads(r['escalations_json'] or '[]')) for r in rows]
 
 @app.get('/api/health')
-def health(): return {'ok':True,'version':'3.1.0','database':'sqlite','features':['property-service','offer-lifecycle','transaction-engine','deposit-ledger','transaction-tasks','identity-gate','ai-orchestration','risk-escalation','communications','pause-resume','recovery','transaction-brain','deterministic-state-engine','brain-evaluation-history','authentication','session-management','identity-linked-transactions']}
+def health(): return {'ok':True,'version':'3.3.4','database':'sqlite','features':['property-service','offer-lifecycle','transaction-engine','deposit-ledger','transaction-tasks','identity-gate','ai-orchestration','risk-escalation','communications','pause-resume','recovery','transaction-brain','deterministic-state-engine','brain-evaluation-history','authentication','session-management','identity-linked-transactions']}
 @app.post('/api/auth/register')
 def register(x:AuthIn):
     c=conn();
