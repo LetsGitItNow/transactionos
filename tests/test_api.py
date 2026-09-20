@@ -29,7 +29,7 @@ def test_health(tmp_path):
     r = c.get("/api/health")
     assert r.status_code == 200
     assert r.json()["ok"] is True
-    assert r.json()["version"] == "3.3.4"
+    assert r.json()["version"] == "3.4.0"
 
 
 def test_auth_property_transaction_offer_submission_and_brain(tmp_path):

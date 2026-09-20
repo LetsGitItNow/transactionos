@@ -2,11 +2,21 @@ from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-import sqlite3, json, os, secrets, hashlib, hmac
+import sqlite3, json, os, secrets, hashlib, hmac, re
+
+try:
+    import psycopg
+    from psycopg.rows import dict_row
+    POSTGRES_AVAILABLE = True
+except ImportError:
+    psycopg = None
+    dict_row = None
+    POSTGRES_AVAILABLE = False
 from datetime import datetime, timezone
 
-BASE=os.path.dirname(__file__); DB=os.path.join(BASE,'transactionos.db')
-app=FastAPI(title='TransactionOS API', version='3.3.4')
+BASE=os.path.dirname(__file__)
+DB=os.getenv('DATABASE_URL', os.path.join(BASE,'transactionos.db'))
+app=FastAPI(title='TransactionOS API', version='3.4.0')
 app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
 
 @app.get('/', include_in_schema=False)
@@ -18,8 +28,45 @@ def serve_api_client():
     return FileResponse(os.path.join(BASE, 'api.js'), media_type='application/javascript')
 
 def now(): return datetime.now(timezone.utc).isoformat()
+def is_postgres():
+    return isinstance(DB, str) and (DB.startswith('postgres://') or DB.startswith('postgresql://'))
+
+def _pg_sql(sql: str) -> str:
+    sql = re.sub(r'\bINSERT\s+OR\s+IGNORE\s+INTO\b', 'INSERT INTO', sql, flags=re.I)
+    if re.search(r'\bINSERT\s+OR\s+REPLACE\s+INTO\s+transaction_controls\b', sql, flags=re.I):
+        sql = re.sub(r'\bINSERT\s+OR\s+REPLACE\s+INTO\b', 'INSERT INTO', sql, flags=re.I)
+        sql += ' ON CONFLICT (transaction_id) DO UPDATE SET paused=EXCLUDED.paused, pause_reason=EXCLUDED.pause_reason, updated_at=EXCLUDED.updated_at'
+    # The prototype used SQLite's double-quoted string literals. PostgreSQL treats
+    # double quotes as identifiers, so convert only quoted all-caps/status literals.
+    sql = re.sub(r'"([A-Z][A-Z0-9_ ]*)"', r"'\1'", sql)
+    return sql
+
+class DBConnection:
+    def __init__(self, raw, postgres=False):
+        self.raw=raw; self.postgres=postgres
+    def execute(self, sql, params=()):
+        if self.postgres:
+            sql=_pg_sql(sql)
+            if 'INSERT INTO transaction_controls' in sql and 'VALUES' in sql and 'ON CONFLICT' not in sql:
+                sql += ' ON CONFLICT (transaction_id) DO NOTHING'
+            return self.raw.execute(sql, params)
+        return self.raw.execute(sql, params)
+    def executescript(self, script):
+        if self.postgres:
+            script=script.replace('    PRAGMA foreign_keys=ON;\n','')
+            script=re.sub(r'\bINSERT\s+OR\s+IGNORE\s+INTO\b', 'INSERT INTO', script, flags=re.I)
+            self.raw.execute(script)
+        else:
+            self.raw.executescript(script)
+    def commit(self): self.raw.commit()
+    def close(self): self.raw.close()
+
 def conn():
-    c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
+    if is_postgres():
+        if not POSTGRES_AVAILABLE:
+            raise RuntimeError('PostgreSQL configured but psycopg is not installed. Run: pip install -r requirements.txt')
+        return DBConnection(psycopg.connect(DB, row_factory=dict_row), True)
+    c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return DBConnection(c, False)
 
 def init():
     c=conn(); c.executescript('''
@@ -215,7 +262,7 @@ def brain_history(tid:str,authorization:str|None=Header(default=None)):
     return [dict(r, next_action=json.loads(r['next_action_json']) if r['next_action_json'] else None, automated_items=json.loads(r['automated_json'] or '[]'), escalations=json.loads(r['escalations_json'] or '[]')) for r in rows]
 
 @app.get('/api/health')
-def health(): return {'ok':True,'version':'3.3.4','database':'sqlite','features':['property-service','offer-lifecycle','transaction-engine','deposit-ledger','transaction-tasks','identity-gate','ai-orchestration','risk-escalation','communications','pause-resume','recovery','transaction-brain','deterministic-state-engine','brain-evaluation-history','authentication','session-management','identity-linked-transactions']}
+def health(): return {'ok':True,'version':'3.4.0','database':'postgresql' if is_postgres() else 'sqlite','features':['property-service','offer-lifecycle','transaction-engine','deposit-ledger','transaction-tasks','identity-gate','ai-orchestration','risk-escalation','communications','pause-resume','recovery','transaction-brain','deterministic-state-engine','brain-evaluation-history','authentication','session-management','identity-linked-transactions']}
 @app.post('/api/auth/register')
 def register(x:AuthIn):
     c=conn();
