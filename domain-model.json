@@ -1,0 +1,100 @@
+{
+  "Property": [
+    "property_id",
+    "address_line_1",
+    "city",
+    "region",
+    "postal_code",
+    "country",
+    "latitude",
+    "longitude",
+    "property_type",
+    "jurisdiction"
+  ],
+  "PropertyParty": [
+    "party_id",
+    "property_id",
+    "role",
+    "identity_id",
+    "authority_status",
+    "contact_channel"
+  ],
+  "Transaction": [
+    "transaction_id",
+    "property_id",
+    "status",
+    "transaction_type",
+    "created_at",
+    "closing_date"
+  ],
+  "Offer": [
+    "offer_id",
+    "transaction_id",
+    "current_version_id",
+    "status",
+    "response_deadline"
+  ],
+  "OfferVersion": [
+    "version_id",
+    "offer_id",
+    "version_number",
+    "actor_party_id",
+    "terms_snapshot",
+    "signed_at",
+    "submitted_at",
+    "response_deadline",
+    "status"
+  ],
+  "Condition": [
+    "condition_id",
+    "transaction_id",
+    "type",
+    "owner_party_id",
+    "due_at",
+    "status"
+  ],
+  "Deadline": [
+    "deadline_id",
+    "transaction_id",
+    "type",
+    "owner_party_id",
+    "due_at",
+    "status"
+  ],
+  "Document": [
+    "document_id",
+    "transaction_id",
+    "type",
+    "template_id",
+    "version",
+    "status",
+    "content_hash"
+  ],
+  "Signature": [
+    "signature_id",
+    "document_id",
+    "party_id",
+    "signed_at",
+    "evidence_id"
+  ],
+  "AuditEvent": [
+    "event_id",
+    "transaction_id",
+    "type",
+    "actor_party_id",
+    "occurred_at",
+    "metadata"
+  ],
+  "Deposit": [
+    "deposit_id",
+    "transaction_id",
+    "required_amount_cents",
+    "status",
+    "provider_ref",
+    "received_at",
+    "held_at",
+    "released_at",
+    "refunded_at",
+    "dispute_reason"
+  ]
+}

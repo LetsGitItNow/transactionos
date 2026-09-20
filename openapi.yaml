@@ -1,0 +1,35 @@
+openapi: 3.0.3
+info:
+  title: TransactionOS Transaction API
+  version: 2.0.0
+paths:
+  /properties:
+    post: {summary: Create property}
+  /properties/{propertyId}:
+    get: {summary: Get normalized property}
+  /transactions:
+    post: {summary: Create transaction}
+  /transactions/{transactionId}:
+    get: {summary: Get transaction workspace}
+  /transactions/{transactionId}/offers:
+    post: {summary: Create offer}
+  /offers/{offerId}:
+    get: {summary: Get current offer}
+  /offers/{offerId}/counter:
+    post: {summary: Create immutable counteroffer version}
+  /offers/{offerId}/accept:
+    post: {summary: Accept current offer version}
+  /offers/{offerId}/decline:
+    post: {summary: Decline current offer version}
+  /offers/{offerId}/withdraw:
+    post: {summary: Withdraw offer where permitted}
+  /offers/{offerId}/history:
+    get: {summary: Get immutable offer version history}
+  /transactions/{transactionId}/events:
+    get: {summary: Get audit events}
+  /transactions/{transactionId}/documents:
+    get: {summary: Get transaction documents}
+  /transactions/{transactionId}/deadlines:
+    get: {summary: Get transaction deadlines}
+  /transactions/{transactionId}/signatures:
+    get: {summary: Get signature evidence}

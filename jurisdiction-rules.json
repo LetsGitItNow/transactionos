@@ -1,0 +1,18 @@
+{
+  "registry_version": "demo-2.0",
+  "jurisdictions": {
+    "CA-ON-TORONTO": {
+      "display_name": "Toronto, Ontario, Canada",
+      "rules": ["land_transfer_tax", "municipal_land_transfer_tax", "first_time_buyer_rebates", "foreign_buyer_flag"],
+      "forms_mode": "authorized_current_template_required",
+      "tax_mode": "rule_engine"
+    },
+    "CA-ON": {
+      "display_name": "Ontario, Canada",
+      "rules": ["land_transfer_tax", "first_time_buyer_rebates"],
+      "forms_mode": "authorized_current_template_required",
+      "tax_mode": "rule_engine"
+    }
+  },
+  "unsupported_policy": "Do not invent tax or legal values. Show that localization is pending until a current ruleset is available."
+}
