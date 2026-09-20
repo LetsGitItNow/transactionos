@@ -42,9 +42,11 @@ def _pg_sql(sql: str) -> str:
     if re.search(r'\bINSERT\s+OR\s+REPLACE\s+INTO\s+transaction_controls\b', sql, flags=re.I):
         sql = re.sub(r'\bINSERT\s+OR\s+REPLACE\s+INTO\b', 'INSERT INTO', sql, flags=re.I)
         sql += ' ON CONFLICT (transaction_id) DO UPDATE SET paused=EXCLUDED.paused, pause_reason=EXCLUDED.pause_reason, updated_at=EXCLUDED.updated_at'
-    # The prototype used SQLite's double-quoted string literals. PostgreSQL treats
-    # double quotes as identifiers, so convert only quoted all-caps/status literals.
-    sql = re.sub(r'"([A-Z][A-Z0-9_ ]*)"', r"'\1'", sql)
+    # The prototype uses SQLite-style parameter markers and double-quoted
+    # string literals. PostgreSQL/psycopg needs %s parameters and single-quoted
+    # string literals.
+    sql = re.sub(r'(?<!%)\\?', '%s', sql)
+    sql = re.sub(r'"([^"]*)"', r"'\\1'", sql)
     return sql
 
 class DBConnection:
@@ -303,7 +305,12 @@ def register(x:AuthIn):
     c=conn();
     try:
         u=uid('usr'); c.execute('INSERT INTO users VALUES (?,?,?,?)',(u,x.email.lower().strip(),pwd_hash(x.password),now())); c.commit(); return {'user_id':u,'email':x.email.lower().strip()}
-    except sqlite3.IntegrityError: raise HTTPException(409,'Email already registered')
+    except Exception as exc:
+        if isinstance(exc, sqlite3.IntegrityError) or (
+            POSTGRES_AVAILABLE and isinstance(exc, psycopg.IntegrityError)
+        ):
+            raise HTTPException(409,'Email already registered')
+        raise
     finally: c.close()
 @app.post('/api/auth/login')
 def login(x:AuthIn):
