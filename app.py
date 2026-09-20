@@ -102,6 +102,23 @@ def auth(authorization):
     c=conn(); r=c.execute('SELECT user_id FROM sessions WHERE token=? AND expires_at>?',(authorization[7:],now())).fetchone(); c.close()
     if not r: raise HTTPException(401,'Invalid or expired session')
     return r['user_id']
+
+def require_transaction_access(c, tid, user_id):
+    r=c.execute('SELECT * FROM transactions WHERE transaction_id=?',(tid,)).fetchone()
+    if not r:
+        raise HTTPException(404,'Transaction not found')
+    if r['created_by'] != user_id:
+        party=c.execute('SELECT 1 FROM property_parties WHERE property_id=? AND user_id=? AND authority_status=\"VERIFIED\" LIMIT 1',(r['property_id'],user_id)).fetchone()
+        if not party:
+            raise HTTPException(403,'You are not authorized to access this transaction')
+    return r
+
+def require_offer_access(c, oid, user_id):
+    r=c.execute('SELECT * FROM offers WHERE offer_id=?',(oid,)).fetchone()
+    if not r:
+        raise HTTPException(404,'Offer not found')
+    require_transaction_access(c,r['transaction_id'],user_id)
+    return r
 def event(c,tid,typ,actor=None,meta=None):
     c.execute('INSERT INTO events VALUES (?,?,?,?,?,?)',(uid('evt'),tid,typ,actor,now(),json.dumps(meta or {})))
 
@@ -128,9 +145,8 @@ class SignatureIn(BaseModel): transaction_id:str; document_id:str|None=None; leg
 
 @app.get('/api/transactions/{tid}/overview')
 def transaction_overview(tid:str,authorization:str|None=Header(default=None)):
-    auth(authorization); c=conn();
-    tx=c.execute('SELECT * FROM transactions WHERE transaction_id=?',(tid,)).fetchone()
-    if not tx: c.close(); raise HTTPException(404,'Transaction not found')
+    u=auth(authorization); c=conn();
+    tx=require_transaction_access(c,tid,u)
     ensure_control(c,tid)
     ctl=c.execute('SELECT * FROM transaction_controls WHERE transaction_id=?',(tid,)).fetchone()
     tasks=[dict(x) for x in c.execute('SELECT * FROM transaction_tasks WHERE transaction_id=? ORDER BY sequence,created_at',(tid,)).fetchall()]
@@ -153,14 +169,13 @@ class PauseIn(BaseModel): reason:str
 @app.post('/api/transactions/{tid}/seller-verify')
 def seller_verify(tid:str,authorization:str|None=Header(default=None)):
     u=auth(authorization); c=conn()
-    if not c.execute('SELECT 1 FROM transactions WHERE transaction_id=?',(tid,)).fetchone(): c.close(); raise HTTPException(404,'Transaction not found')
+    require_transaction_access(c,tid,u)
     event(c,tid,'SELLER_IDENTITY_AUTHORITY_VERIFIED',None,{'method':'demo','prototype':True})
     c.commit(); c.close(); return {'transaction_id':tid,'status':'VERIFIED','authority_status':'VERIFIED','prototype':True}
 
 @app.post('/api/offers/{oid}/withdraw')
 def withdraw_offer(oid:str,authorization:str|None=Header(default=None)):
-    auth(authorization); c=conn(); o=c.execute('SELECT * FROM offers WHERE offer_id=?',(oid,)).fetchone()
-    if not o: c.close(); raise HTTPException(404,'Offer not found')
+    u=auth(authorization); c=conn(); o=require_offer_access(c,oid,u)
     if o['status'] not in ('AWAITING_RESPONSE','DRAFT'): c.close(); raise HTTPException(409,'Offer cannot be withdrawn in its current state')
     at=now(); c.execute('UPDATE offers SET status="WITHDRAWN" WHERE offer_id=?',(oid,)); event(c,o['transaction_id'],'OFFER_WITHDRAWN',None,{'offer_id':oid,'withdrawn_at':at}); c.commit(); c.close(); return {'offer_id':oid,'status':'WITHDRAWN','withdrawn_at':at}
 
@@ -335,18 +350,19 @@ def create_tx(x:TxIn,authorization:str|None=Header(default=None)):
     t=uid('txn'); c.execute('INSERT INTO transactions VALUES (?,?,?,?,?)',(t,x.property_id,'INITIATED',u,now())); event(c,t,'TRANSACTION_CREATED',None); c.commit(); c.close(); return {'transaction_id':t,'property_id':x.property_id,'status':'INITIATED'}
 @app.get('/api/transactions/{tid}')
 def get_tx(tid:str,authorization:str|None=Header(default=None)):
-    auth(authorization); c=conn(); r=c.execute('SELECT * FROM transactions WHERE transaction_id=?',(tid,)).fetchone();
-    if not r: c.close(); raise HTTPException(404,'Transaction not found')
+    u=auth(authorization); c=conn(); r=require_transaction_access(c,tid,u)
     out=dict(r); out['conditions']=[dict(x) for x in c.execute('SELECT * FROM conditions WHERE transaction_id=?',(tid,))]; out['documents']=[dict(x) for x in c.execute('SELECT * FROM documents WHERE transaction_id=?',(tid,))]; out['events']=[dict(x) for x in c.execute('SELECT * FROM events WHERE transaction_id=? ORDER BY occurred_at',(tid,))]; c.close(); return out
 @app.post('/api/transactions/{tid}/offers')
 def create_offer(tid:str,x:OfferIn,authorization:str|None=Header(default=None)):
     u=auth(authorization); c=conn();
-    if tid!=x.transaction_id or not c.execute('SELECT 1 FROM transactions WHERE transaction_id=?',(tid,)).fetchone(): c.close(); raise HTTPException(404,'Transaction not found')
+    if tid!=x.transaction_id:
+        c.close(); raise HTTPException(400,'Transaction ID mismatch')
+    require_transaction_access(c,tid,u)
     oid=uid('offer'); c.execute('INSERT INTO offers VALUES (?,?,?,?,?,?,?)',(oid,tid,'DRAFT',None,0,u,now())); event(c,tid,'OFFER_CREATED',None,{'offer_id':oid}); c.commit(); c.close(); return {'offer_id':oid,'transaction_id':tid,'status':'DRAFT'}
 @app.post('/api/identity/verify')
 def verify_identity(x:IdentityIn,authorization:str|None=Header(default=None)):
     u=auth(authorization); c=conn()
-    if not c.execute('SELECT 1 FROM transactions WHERE transaction_id=?',(x.transaction_id,)).fetchone(): c.close(); raise HTTPException(404,'Transaction not found')
+    require_transaction_access(c,x.transaction_id,u)
     vid=uid('idv'); at=now()
     c.execute('INSERT INTO identity_verifications VALUES (?,?,?,?,?,?,?,?,?)',(vid,x.transaction_id,u,x.legal_name,x.email,'VERIFIED',x.method,at,at))
     event(c,x.transaction_id,'BUYER_IDENTITY_VERIFIED',None,{'verification_id':vid,'method':x.method,'legal_name':x.legal_name})
@@ -354,14 +370,16 @@ def verify_identity(x:IdentityIn,authorization:str|None=Header(default=None)):
 
 @app.get('/api/transactions/{tid}/identity')
 def get_identity(tid:str,authorization:str|None=Header(default=None)):
-    auth(authorization); c=conn(); r=c.execute('SELECT * FROM identity_verifications WHERE transaction_id=? ORDER BY verified_at DESC LIMIT 1',(tid,)).fetchone(); c.close()
+    u=auth(authorization); c=conn(); require_transaction_access(c,tid,u); r=c.execute('SELECT * FROM identity_verifications WHERE transaction_id=? ORDER BY verified_at DESC LIMIT 1',(tid,)).fetchone(); c.close()
     if not r: raise HTTPException(404,'Buyer identity not verified')
     return dict(r)
 
 @app.post('/api/signatures')
 def create_signature(x:SignatureIn,authorization:str|None=Header(default=None)):
     u=auth(authorization); c=conn()
-    if not c.execute('SELECT 1 FROM transactions WHERE transaction_id=?',(x.transaction_id,)).fetchone(): c.close(); raise HTTPException(404,'Transaction not found')
+    require_transaction_access(c,x.transaction_id,u)
+    if not c.execute('SELECT 1 FROM identity_verifications WHERE transaction_id=? AND user_id=? AND status=\"VERIFIED\" LIMIT 1',(x.transaction_id,u)).fetchone():
+        c.close(); raise HTTPException(409,'Buyer identity verification is required before signature')
     # Prototype signature evidence is intentionally simple; production uses a qualified e-sign provider.
     sid=uid('sig'); at=now(); evidence={'method':x.method,'legal_name':x.legal_name,'signature_data':x.signature_data,'recorded_at':at,'prototype':True}
     c.execute('INSERT INTO signatures VALUES (?,?,?,?,?,?,?)',(sid,x.transaction_id,x.document_id,None,'SIGNED',at,json.dumps(evidence)))
@@ -370,21 +388,30 @@ def create_signature(x:SignatureIn,authorization:str|None=Header(default=None)):
 
 @app.get('/api/transactions/{tid}/signatures')
 def get_signatures(tid:str,authorization:str|None=Header(default=None)):
-    auth(authorization); c=conn(); rs=c.execute('SELECT * FROM signatures WHERE transaction_id=? ORDER BY signed_at',(tid,)).fetchall(); c.close(); return [dict(r) for r in rs]
+    u=auth(authorization); c=conn(); require_transaction_access(c,tid,u); rs=c.execute('SELECT * FROM signatures WHERE transaction_id=? ORDER BY signed_at',(tid,)).fetchall(); c.close(); return [dict(r) for r in rs]
 
 @app.post('/api/offers/{oid}/versions')
 def add_version(oid:str,x:VersionIn,authorization:str|None=Header(default=None)):
-    u=auth(authorization); c=conn(); o=c.execute('SELECT * FROM offers WHERE offer_id=?',(oid,)).fetchone();
-    if not o: c.close(); raise HTTPException(404,'Offer not found')
+    u=auth(authorization); c=conn(); o=require_offer_access(c,oid,u)
+    if o['status'] in ('ACCEPTED','DECLINED','EXPIRED','WITHDRAWN'):
+        c.close(); raise HTTPException(409,'This offer is no longer negotiable')
     # Initial buyer submission is gated by identity + signature. Subsequent negotiation versions inherit the verified transaction.
     if o['current_version_number']==0: require_ready_for_submission(c,o['transaction_id'])
     n=o['current_version_number']+1; vid=uid('ver'); c.execute('UPDATE offer_versions SET status="PRESERVED" WHERE offer_id=? AND status="CURRENT"',(oid,)); c.execute('INSERT INTO offer_versions VALUES (?,?,?,?,?,?,?,?,?)',(vid,oid,n,x.actor_party_id,'CURRENT',json.dumps(x.payload),now(),None,x.deadline_at)); c.execute('UPDATE offers SET status="AWAITING_RESPONSE",current_version_id=?,current_version_number=? WHERE offer_id=?',(vid,n,oid)); c.execute('UPDATE transactions SET status="NEGOTIATING" WHERE transaction_id=?',(o['transaction_id'],)); event(c,o['transaction_id'],'OFFER_VERSION_SUBMITTED',x.actor_party_id,{'offer_id':oid,'version_id':vid,'version_number':n}); c.commit(); c.close(); return {'version_id':vid,'version_number':n,'status':'CURRENT'}
 @app.post('/api/offers/{oid}/accept')
 def accept(oid:str,authorization:str|None=Header(default=None)):
-    u=auth(authorization); c=conn(); o=c.execute('SELECT * FROM offers WHERE offer_id=?',(oid,)).fetchone();
-    if not o or not o['current_version_id']: c.close(); raise HTTPException(400,'No current offer version')
-    v=c.execute('SELECT * FROM offer_versions WHERE version_id=?',(o['current_version_id'],)).fetchone();
-    if not v: c.close(); raise HTTPException(400,'Current offer version not found')
+    u=auth(authorization); c=conn(); o=require_offer_access(c,oid,u)
+    if o['status'] != 'AWAITING_RESPONSE' or not o['current_version_id']:
+        c.close(); raise HTTPException(409,'Offer is not awaiting a response')
+    v=c.execute('SELECT * FROM offer_versions WHERE version_id=?',(o['current_version_id'],)).fetchone()
+    if not v or v['status'] != 'CURRENT': c.close(); raise HTTPException(409,'Current offer version is not actionable')
+    if v['deadline_at']:
+        deadline=datetime.fromisoformat(v['deadline_at'].replace('Z','+00:00'))
+        if datetime.now(timezone.utc) >= deadline:
+            c.execute('UPDATE offer_versions SET status=\"EXPIRED\" WHERE version_id=?',(v['version_id'],))
+            c.execute('UPDATE offers SET status=\"EXPIRED\" WHERE offer_id=?',(oid,))
+            event(c,o['transaction_id'],'OFFER_EXPIRED',None,{'offer_id':oid,'offer_version_id':v['version_id']})
+            c.commit(); c.close(); raise HTTPException(409,'Offer response deadline has expired')
     at=now(); payload=json.loads(v['payload_json'] or '{}')
     c.execute('UPDATE offer_versions SET status="ACCEPTED",accepted_at=? WHERE version_id=?',(at,v['version_id']))
     c.execute('UPDATE offers SET status="ACCEPTED" WHERE offer_id=?',(oid,))
@@ -437,8 +464,7 @@ def accept(oid:str,authorization:str|None=Header(default=None)):
 
 @app.get('/api/transactions/{tid}/tasks')
 def get_tasks(tid:str,authorization:str|None=Header(default=None)):
-    auth(authorization); c=conn();
-    if not c.execute('SELECT 1 FROM transactions WHERE transaction_id=?',(tid,)).fetchone(): c.close(); raise HTTPException(404,'Transaction not found')
+    u=auth(authorization); c=conn(); require_transaction_access(c,tid,u);
     rs=c.execute('SELECT * FROM transaction_tasks WHERE transaction_id=? ORDER BY sequence,created_at',(tid,)).fetchall(); c.close(); return [dict(r) for r in rs]
 
 @app.post('/api/transactions/{tid}/ai-next-action')
@@ -488,6 +514,7 @@ def ai_next_action(tid:str,authorization:str|None=Header(default=None)):
 def complete_task(task_id:str,authorization:str|None=Header(default=None)):
     u=auth(authorization); c=conn(); r=c.execute('SELECT * FROM transaction_tasks WHERE task_id=?',(task_id,)).fetchone()
     if not r: c.close(); raise HTTPException(404,'Task not found')
+    require_transaction_access(c,r['transaction_id'],u)
     if r['status']=='COMPLETED': c.close(); return dict(r)
     at=now(); c.execute('UPDATE transaction_tasks SET status="COMPLETED",completed_at=? WHERE task_id=?',(at,task_id)); event(c,r['transaction_id'],'TASK_COMPLETED',None,{'task_id':task_id,'label':r['label']}); c.commit(); out=dict(c.execute('SELECT * FROM transaction_tasks WHERE task_id=?',(task_id,)).fetchone()); c.close(); return out
 
@@ -498,7 +525,7 @@ def get_offer(oid:str,authorization:str|None=Header(default=None)):
     out=dict(o); out['versions']=[dict(v) for v in c.execute('SELECT * FROM offer_versions WHERE offer_id=? ORDER BY version_number',(oid,))]; c.close(); return out
 @app.get('/api/offers/{oid}/versions')
 def get_offer_versions(oid:str,authorization:str|None=Header(default=None)):
-    auth(authorization); c=conn(); rs=c.execute('SELECT * FROM offer_versions WHERE offer_id=? ORDER BY version_number',(oid,)).fetchall(); c.close(); return [dict(r) for r in rs]
+    u=auth(authorization); c=conn(); require_offer_access(c,oid,u); rs=c.execute('SELECT * FROM offer_versions WHERE offer_id=? ORDER BY version_number',(oid,)).fetchall(); c.close(); return [dict(r) for r in rs]
 
 class DepositIn(BaseModel):
     amount_cents:int=Field(gt=0)
@@ -507,8 +534,7 @@ class DepositIn(BaseModel):
 @app.post('/api/transactions/{tid}/deposit')
 def create_deposit(tid:str,x:DepositIn,authorization:str|None=Header(default=None)):
     u=auth(authorization); c=conn();
-    if not c.execute('SELECT 1 FROM transactions WHERE transaction_id=?',(tid,)).fetchone():
-        c.close(); raise HTTPException(404,'Transaction not found')
+    require_transaction_access(c,tid,u)
     existing=c.execute('SELECT * FROM deposits WHERE transaction_id=? ORDER BY created_at DESC LIMIT 1',(tid,)).fetchone()
     if existing and existing['status'] not in ('REFUNDED','RELEASED','CANCELLED'):
         c.close(); raise HTTPException(409,'An active deposit already exists for this transaction')
@@ -518,24 +544,26 @@ def create_deposit(tid:str,x:DepositIn,authorization:str|None=Header(default=Non
 
 @app.get('/api/transactions/{tid}/deposit')
 def get_deposit(tid:str,authorization:str|None=Header(default=None)):
-    auth(authorization); c=conn(); r=c.execute('SELECT * FROM deposits WHERE transaction_id=? ORDER BY created_at DESC LIMIT 1',(tid,)).fetchone(); c.close()
+    u=auth(authorization); c=conn(); require_transaction_access(c,tid,u); r=c.execute('SELECT * FROM deposits WHERE transaction_id=? ORDER BY created_at DESC LIMIT 1',(tid,)).fetchone(); c.close()
     if not r: raise HTTPException(404,'No deposit record for transaction')
     return dict(r)
 
 @app.post('/api/deposits/{did}/simulate-receipt')
 def simulate_deposit_receipt(did:str,authorization:str|None=Header(default=None)):
-    auth(authorization); c=conn(); r=c.execute('SELECT * FROM deposits WHERE deposit_id=?',(did,)).fetchone()
+    u=auth(authorization); c=conn(); r=c.execute('SELECT * FROM deposits WHERE deposit_id=?',(did,)).fetchone()
     if not r: c.close(); raise HTTPException(404,'Deposit not found')
+    require_transaction_access(c,r['transaction_id'],u)
     if r['status']!='REQUIRED': c.close(); raise HTTPException(409,'Deposit is not awaiting payment')
     at=now(); provider_ref=r['provider_ref'] or 'DEMO-TRUST-'+secrets.token_hex(4).upper(); c.execute('UPDATE deposits SET status="HELD",provider_ref=?,received_at=?,held_at=? WHERE deposit_id=?',(provider_ref,at,at,did)); event(c,r['transaction_id'],'DEPOSIT_RECEIVED',None,{'deposit_id':did,'provider_ref':provider_ref,'simulated':True}); c.commit(); out=dict(c.execute('SELECT * FROM deposits WHERE deposit_id=?',(did,)).fetchone()); c.close(); return out
 
 @app.post('/api/deposits/{did}/simulate-release')
 def simulate_deposit_release(did:str,authorization:str|None=Header(default=None)):
-    auth(authorization); c=conn(); r=c.execute('SELECT * FROM deposits WHERE deposit_id=?',(did,)).fetchone()
+    u=auth(authorization); c=conn(); r=c.execute('SELECT * FROM deposits WHERE deposit_id=?',(did,)).fetchone()
     if not r: c.close(); raise HTTPException(404,'Deposit not found')
+    require_transaction_access(c,r['transaction_id'],u)
     if r['status']!='HELD': c.close(); raise HTTPException(409,'Only a held deposit can be released in this demo')
     at=now(); c.execute('UPDATE deposits SET status="RELEASED",released_at=? WHERE deposit_id=?',(at,did)); event(c,r['transaction_id'],'DEPOSIT_RELEASED',None,{'deposit_id':did,'simulated':True}); c.commit(); out=dict(c.execute('SELECT * FROM deposits WHERE deposit_id=?',(did,)).fetchone()); c.close(); return out
 
 @app.get('/api/transactions/{tid}/events')
 def events(tid:str,authorization:str|None=Header(default=None)):
-    auth(authorization); c=conn(); rs=c.execute('SELECT * FROM events WHERE transaction_id=? ORDER BY occurred_at',(tid,)).fetchall(); c.close(); return [dict(r) for r in rs]
+    u=auth(authorization); c=conn(); require_transaction_access(c,tid,u); rs=c.execute('SELECT * FROM events WHERE transaction_id=? ORDER BY occurred_at',(tid,)).fetchall(); c.close(); return [dict(r) for r in rs]

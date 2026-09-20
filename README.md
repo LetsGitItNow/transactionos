@@ -1,4 +1,4 @@
-# TransactionOS v3.4.0 — Transaction Platform Prototype
+# TransactionOS v3.4.1 — Transaction Platform Prototype
 
 TransactionOS is a global real-estate transaction platform prototype: the transaction engine is the core product, with marketplace discovery layered on top.
 
@@ -65,3 +65,14 @@ For a managed PostgreSQL deployment:
 `postgres_schema.sql` is included as an explicit schema reference. `.env.example` documents the environment variable without containing credentials.
 
 The local SQLite database is deliberately not version-controlled. Production should use a managed PostgreSQL instance with encrypted connections, backups, access controls, and provider-level monitoring.
+
+## v3.4.1 transaction-engine hardening
+
+- Added transaction-scoped authorization checks across transaction, offer, task, deposit, identity, signature, overview, and event operations.
+- Prevented acceptance of expired or already-finalized offers.
+- Preserved immutable prior offer versions while allowing only the current version to be actionable.
+- Required verified buyer identity before creating a prototype signature.
+- Added regression tests covering offer lifecycle, expiry, transaction isolation, signature gating, tasks, and deposit state transitions.
+
+Run the test suite with `pytest -q`.
+
