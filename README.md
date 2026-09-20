@@ -49,11 +49,11 @@ The test suite uses an isolated temporary SQLite database and does not modify th
 
 The workflow engine remains the source of truth. AI may explain, prepare, validate, and coordinate administrative work, but legally significant decisions remain human-controlled.
 
-The next production-foundation steps are PostgreSQL, stronger authentication/session controls, automated testing expansion, deployment, and a clearly isolated demo environment.
+v3.5.0 establishes the runtime configuration and deployment boundary. The next steps are stronger authentication, production database migrations, deployment, and a clearly isolated demo environment.
 
 ## PostgreSQL foundation
 
-TransactionOS 3.4.0 can use PostgreSQL through the `DATABASE_URL` environment variable. If it is not set, local development continues to use SQLite.
+TransactionOS 3.5.0 can use PostgreSQL through the `DATABASE_URL` environment variable. If it is not set, local development continues to use SQLite.
 
 For a managed PostgreSQL deployment:
 
@@ -76,3 +76,12 @@ The local SQLite database is deliberately not version-controlled. Production sho
 
 Run the test suite with `pytest -q`.
 
+
+## v3.5.0 production-foundation boundary
+
+- Runtime configuration is environment-driven through `APP_ENV`, `DATABASE_URL`, `SESSION_TTL_HOURS`, `LOG_LEVEL`, and `CORS_ORIGINS`.
+- CORS is restricted to configured origins instead of allowing every origin by default.
+- `/api/health` reports application/runtime identity; `/api/readyz` verifies database readiness.
+- Session lifetime is configurable and defaults to 24 hours.
+- No secrets belong in the repository; use environment variables or the deployment platform's secret store.
+- This remains an alpha prototype: production deployment still requires security review, migrations, backups, monitoring, real identity/e-signature/payment integrations, and jurisdiction-specific compliance.

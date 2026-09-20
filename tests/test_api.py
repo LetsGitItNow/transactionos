@@ -59,7 +59,12 @@ def prepare_offer(client, headers, deadline=None, deposit="$50,000"):
 def test_health_and_baseline_flow(tmp_path):
     c = client_with_fresh_db(tmp_path)
     headers = register_and_login(c, "test@example.com")
-    assert c.get("/api/health").json()["ok"] is True
+    health = c.get("/api/health").json()
+    assert health["ok"] is True
+    assert health["version"] == "3.5.0"
+    ready = c.get("/api/readyz")
+    assert ready.status_code == 200
+    assert ready.json()["ready"] is True
     tid, oid, version_id = prepare_offer(c, headers)
 
     accepted = c.post(f"/api/offers/{oid}/accept", headers=headers)

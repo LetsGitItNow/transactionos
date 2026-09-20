@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Header
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-import sqlite3, json, os, secrets, hashlib, hmac, re
+import sqlite3, json, os, secrets, hashlib, hmac, re, logging
 
 try:
     import psycopg
@@ -12,12 +12,18 @@ except ImportError:
     psycopg = None
     dict_row = None
     POSTGRES_AVAILABLE = False
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 BASE=os.path.dirname(__file__)
+APP_ENV=os.getenv('APP_ENV','development').lower()
 DB=os.getenv('DATABASE_URL', os.path.join(BASE,'transactionos.db'))
-app=FastAPI(title='TransactionOS API', version='3.4.0')
-app.add_middleware(CORSMiddleware, allow_origins=['*'], allow_methods=['*'], allow_headers=['*'])
+SESSION_TTL_HOURS=int(os.getenv('SESSION_TTL_HOURS','24'))
+LOG_LEVEL=os.getenv('LOG_LEVEL','INFO').upper()
+CORS_ORIGINS=[x.strip() for x in os.getenv('CORS_ORIGINS','http://127.0.0.1:8000,http://localhost:8000').split(',') if x.strip()]
+logging.basicConfig(level=getattr(logging,LOG_LEVEL,logging.INFO), format='%(asctime)s %(levelname)s %(name)s %(message)s')
+logger=logging.getLogger('transactionos')
+app=FastAPI(title='TransactionOS API', version='3.5.0')
+app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=['GET','POST','OPTIONS'], allow_headers=['Authorization','Content-Type'])
 
 @app.get('/', include_in_schema=False)
 def serve_frontend():
@@ -60,6 +66,9 @@ class DBConnection:
             self.raw.executescript(script)
     def commit(self): self.raw.commit()
     def close(self): self.raw.close()
+
+def db_backend():
+    return 'postgresql' if is_postgres() else 'sqlite'
 
 def conn():
     if is_postgres():
@@ -277,7 +286,18 @@ def brain_history(tid:str,authorization:str|None=Header(default=None)):
     return [dict(r, next_action=json.loads(r['next_action_json']) if r['next_action_json'] else None, automated_items=json.loads(r['automated_json'] or '[]'), escalations=json.loads(r['escalations_json'] or '[]')) for r in rows]
 
 @app.get('/api/health')
-def health(): return {'ok':True,'version':'3.4.0','database':'postgresql' if is_postgres() else 'sqlite','features':['property-service','offer-lifecycle','transaction-engine','deposit-ledger','transaction-tasks','identity-gate','ai-orchestration','risk-escalation','communications','pause-resume','recovery','transaction-brain','deterministic-state-engine','brain-evaluation-history','authentication','session-management','identity-linked-transactions']}
+def health():
+    return {'ok':True,'version':'3.5.0','environment':APP_ENV,'database':db_backend(),'features':['property-service','offer-lifecycle','transaction-engine','deposit-ledger','transaction-tasks','identity-gate','ai-orchestration','risk-escalation','communications','pause-resume','recovery','transaction-brain','deterministic-state-engine','brain-evaluation-history','authentication','session-management','identity-linked-transactions']}
+
+@app.get('/api/readyz')
+def readyz():
+    # Readiness probe verifies the configured database can execute a query.
+    try:
+        c=conn(); c.execute('SELECT 1').fetchone(); c.close()
+        return {'ready':True,'database':db_backend()}
+    except Exception as exc:
+        logger.exception('Database readiness check failed')
+        raise HTTPException(503, f'Database unavailable: {type(exc).__name__}')
 @app.post('/api/auth/register')
 def register(x:AuthIn):
     c=conn();
@@ -289,7 +309,7 @@ def register(x:AuthIn):
 def login(x:AuthIn):
     c=conn(); r=c.execute('SELECT * FROM users WHERE email=?',(x.email.lower().strip(),)).fetchone()
     if not r or not pwd_ok(x.password,r['password_hash']): c.close(); raise HTTPException(401,'Invalid credentials')
-    tok=secrets.token_urlsafe(32); exp=datetime.fromtimestamp(datetime.now(timezone.utc).timestamp()+86400,timezone.utc).isoformat(); c.execute('INSERT INTO sessions VALUES (?,?,?,?)',(tok,r['user_id'],now(),exp)); c.commit(); c.close(); return {'access_token':tok,'token_type':'bearer','expires_at':exp,'user_id':r['user_id']}
+    tok=secrets.token_urlsafe(32); exp=(datetime.now(timezone.utc)+timedelta(hours=SESSION_TTL_HOURS)).replace(microsecond=0).isoformat(); c.execute('INSERT INTO sessions VALUES (?,?,?,?)',(tok,r['user_id'],now(),exp)); c.commit(); c.close(); return {'access_token':tok,'token_type':'bearer','expires_at':exp,'user_id':r['user_id']}
 @app.get('/api/auth/me')
 def me(authorization:str|None=Header(default=None)): 
     u=auth(authorization); c=conn(); r=c.execute('SELECT user_id,email,created_at FROM users WHERE user_id=?',(u,)).fetchone(); c.close(); return dict(r)
