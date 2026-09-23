@@ -38,15 +38,59 @@ def is_postgres():
     return isinstance(DB, str) and (DB.startswith('postgres://') or DB.startswith('postgresql://'))
 
 def _pg_sql(sql: str) -> str:
-    sql = re.sub(r'\bINSERT\s+OR\s+IGNORE\s+INTO\b', 'INSERT INTO', sql, flags=re.I)
-    if re.search(r'\bINSERT\s+OR\s+REPLACE\s+INTO\s+transaction_controls\b', sql, flags=re.I):
-        sql = re.sub(r'\bINSERT\s+OR\s+REPLACE\s+INTO\b', 'INSERT INTO', sql, flags=re.I)
-        sql += ' ON CONFLICT (transaction_id) DO UPDATE SET paused=EXCLUDED.paused, pause_reason=EXCLUDED.pause_reason, updated_at=EXCLUDED.updated_at'
-    # The prototype uses SQLite-style parameter markers and double-quoted
-    # string literals. PostgreSQL/psycopg needs %s parameters and single-quoted
-    # string literals.
-    sql = re.sub(r'(?<!%)\\?', '%s', sql)
-    sql = re.sub(r'"([^"]*)"', r"'\\1'", sql)
+    """
+    Convert the small SQLite SQL dialect used by the prototype into
+    PostgreSQL-compatible SQL.
+
+    Keep this conversion centralized so application queries can remain
+    backend-neutral.
+    """
+    # SQLite INSERT OR IGNORE -> PostgreSQL INSERT ... ON CONFLICT DO NOTHING
+    if re.search(r'\bINSERT\s+OR\s+IGNORE\s+INTO\b', sql, flags=re.I):
+        sql = re.sub(
+            r'\bINSERT\s+OR\s+IGNORE\s+INTO\b',
+            'INSERT INTO',
+            sql,
+            flags=re.I,
+        )
+
+        # These INSERT OR IGNORE statements are intentionally idempotent.
+        # Add the generic PostgreSQL equivalent.
+        sql = sql.rstrip().rstrip(';') + ' ON CONFLICT DO NOTHING'
+
+    # SQLite INSERT OR REPLACE is only used for transaction_controls.
+    # PostgreSQL equivalent is an UPSERT on the primary key.
+    if re.search(
+        r'\bINSERT\s+OR\s+REPLACE\s+INTO\s+transaction_controls\b',
+        sql,
+        flags=re.I,
+    ):
+        sql = re.sub(
+            r'\bINSERT\s+OR\s+REPLACE\s+INTO\b',
+            'INSERT INTO',
+            sql,
+            flags=re.I,
+        )
+
+        sql = (
+            sql.rstrip().rstrip(';')
+            + ' ON CONFLICT (transaction_id) DO UPDATE SET '
+            'paused=EXCLUDED.paused, '
+            'pause_reason=EXCLUDED.pause_reason, '
+            'updated_at=EXCLUDED.updated_at'
+        )
+
+    # The prototype uses SQLite-style ? parameters.
+    # psycopg requires %s.
+    sql = re.sub(r'(?<!%)\?', '%s', sql)
+
+    # The prototype uses double quotes for string literals in a number
+    # of application queries. PostgreSQL uses single quotes for literals.
+    #
+    # TransactionOS does not currently use quoted SQL identifiers, so this
+    # conversion is safe for the current prototype SQL.
+    sql = re.sub(r'"([^"]*)"', r"'\1'", sql)
+
     return sql
 
 class DBConnection:
