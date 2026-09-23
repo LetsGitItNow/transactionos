@@ -39,12 +39,10 @@ def is_postgres():
 
 def _pg_sql(sql: str) -> str:
     """
-    Convert the small SQLite SQL dialect used by the prototype into
+    Convert the SQLite-style SQL used by the prototype into
     PostgreSQL-compatible SQL.
-
-    Keep this conversion centralized so application queries can remain
-    backend-neutral.
     """
+
     # SQLite INSERT OR IGNORE -> PostgreSQL INSERT ... ON CONFLICT DO NOTHING
     if re.search(r'\bINSERT\s+OR\s+IGNORE\s+INTO\b', sql, flags=re.I):
         sql = re.sub(
@@ -53,13 +51,9 @@ def _pg_sql(sql: str) -> str:
             sql,
             flags=re.I,
         )
-
-        # These INSERT OR IGNORE statements are intentionally idempotent.
-        # Add the generic PostgreSQL equivalent.
         sql = sql.rstrip().rstrip(';') + ' ON CONFLICT DO NOTHING'
 
-    # SQLite INSERT OR REPLACE is only used for transaction_controls.
-    # PostgreSQL equivalent is an UPSERT on the primary key.
+    # SQLite INSERT OR REPLACE for transaction_controls -> PostgreSQL UPSERT
     if re.search(
         r'\bINSERT\s+OR\s+REPLACE\s+INTO\s+transaction_controls\b',
         sql,
@@ -71,7 +65,6 @@ def _pg_sql(sql: str) -> str:
             sql,
             flags=re.I,
         )
-
         sql = (
             sql.rstrip().rstrip(';')
             + ' ON CONFLICT (transaction_id) DO UPDATE SET '
@@ -80,16 +73,38 @@ def _pg_sql(sql: str) -> str:
             'updated_at=EXCLUDED.updated_at'
         )
 
-    # The prototype uses SQLite-style ? parameters.
-    # psycopg requires %s.
-    sql = re.sub(r'(?<!%)\?', '%s', sql)
+    # SQLite uses ? placeholders; psycopg uses %s.
+    sql = sql.replace('?', '%s')
 
-    # The prototype uses double quotes for string literals in a number
-    # of application queries. PostgreSQL uses single quotes for literals.
-    #
-    # TransactionOS does not currently use quoted SQL identifiers, so this
-    # conversion is safe for the current prototype SQL.
-    sql = re.sub(r'"([^"]*)"', r"'\1'", sql)
+    # Convert the SQLite double-quoted string literals currently used
+    # by TransactionOS. These are known application status values,
+    # not SQL identifiers.
+    string_literals = (
+        'VERIFIED',
+        'SIGNED',
+        'RESOLVED',
+        'HIGH',
+        'MEDIUM',
+        'WITHDRAWN',
+        'EXPIRED',
+        'PRESERVED',
+        'CURRENT',
+        'ACCEPTED',
+        'AWAITING_RESPONSE',
+        'ACTIVE',
+        'NEGOTIATING',
+        'REFUNDED',
+        'RELEASED',
+        'CANCELLED',
+        'COMPLETED',
+        'REQUIRED',
+    )
+
+    for value in string_literals:
+        sql = sql.replace(f'"{value}"', f"'{value}'")
+
+    # SQLite uses "" as an empty string in a few COALESCE expressions.
+    sql = sql.replace('""', "''")
 
     return sql
 
