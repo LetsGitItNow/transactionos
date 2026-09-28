@@ -36,10 +36,12 @@ var TransactionOSAPI = (() => {
   }
 
 
-  async function localOrMock(fn, mockFn){
-    try { if(await ensureDemoAuth()) return await fn(); } catch(e) { console.warn('TransactionOS API fallback:',e.message); }
-    return mockFn();
+async function localOrMock(fn, mockFn){
+  if(await ensureDemoAuth()) {
+    return await fn();
   }
+  return mockFn();
+}
 
   return {
     async ensureReady(){ return ensureDemoAuth(); },
